@@ -59,7 +59,7 @@ for PID in $(ps aux --sort=-%cpu | awk '$3>80 {print $2}'); do
 
     # Intentar matar el proceso con SIGTERM (kill -15)
     echo "Intentando terminar proceso amigablemente: $PROC_NAME (PID: $PID)"
-    kill -15 $PID
+    kill -9 $PID
     
     # Esperar un momento para ver si el proceso se cierra
     sleep 2
