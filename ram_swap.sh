@@ -1,32 +1,74 @@
 #!/bin/bash
 
-# ---------------------------------------------------------
-# Script de verificación de uso de memoria y swap
-# Autor: Ricardo Rosero
-# Email: rrosero2000@gmail.com
-# Github: https://github.com/rr-n4p5t3r
-# ---------------------------------------------------------
-# Este script verifica el uso de la memoria RAM y swap.
-# Si el uso de la RAM supera el 80% o el uso de la swap
-# supera el 50%, ejecuta los comandos `swapoff -a` y `sudo swapon -a`.
-# ---------------------------------------------------------
+# ==================================================
+# Script de monitoreo y optimización de memoria y swap
+# Desarrollado por Ricardo Rosero
+# ==================================================
 
-# Umbrales
-RAM_THRESHOLD=80
-SWAP_THRESHOLD=40
+# Habilitar el modo de depuración y salir si un comando falla
+set -e
+trap 'echo "🚫 Error: El script ha fallado en la línea $LINENO." >&2; exit 1' ERR
 
-# Obtén el porcentaje de uso de la RAM
-ram_usage=$(free | awk '/^Mem/ {printf("%.0f", $3/$2 * 100.0)}')
+# --- Umbrales y configuración ---
+readonly RAM_THRESHOLD=80
+readonly SWAP_THRESHOLD=50
+readonly LOG_FILE="/var/log/memory_monitor.log"
 
-# Obtén el porcentaje de uso de la Swap
-swap_usage=$(free | awk '/^Swap/ {printf("%.0f", $3/$2 * 100.0)}')
+# --- Funciones de utilidad ---
 
-# Asegúrate de que ram_usage y swap_usage no estén vacíos
-ram_usage=${ram_usage:-0}
-swap_usage=${swap_usage:-0}
+# Verificar si el script se está ejecutando como root
+check_root() {
+    if [[ "$EUID" -ne 0 ]]; then
+        echo "🚫 Este script debe ejecutarse con privilegios de root (sudo) para funcionar correctamente."
+        exit 1
+    fi
+}
 
-# Verifica si alguno de los umbrales se ha superado y ejecuta los comandos si es necesario
-if [ "$ram_usage" -gt "$RAM_THRESHOLD" ] || [ "$swap_usage" -gt "$SWAP_THRESHOLD" ]; then
-    sudo swapoff -a
-    sudo swapon -a
-fi
+# Obtener el uso de memoria en un solo comando
+get_usage() {
+    local mem_usage=$(free | awk '/^Mem/ {printf("%.0f", $3/$2 * 100.0)}')
+    local swap_usage=$(free | awk '/^Swap/ {if ($2>0) printf("%.0f", $3/$2 * 100.0); else print 0}')
+    echo "$mem_usage $swap_usage"
+}
+
+# Realizar la operación de swapoff y swapon
+reset_swap() {
+    echo "✅ Reseteando swap..."
+    if sudo swapoff -a && sudo swapon -a; then
+        echo "Swap reseteada con éxito."
+    else
+        echo "Error al resetear swap."
+    fi
+}
+
+# --- Lógica principal del script ---
+
+main() {
+    check_root
+
+    echo "Iniciando la verificación de uso de memoria y swap..."
+    
+    # Obtener el uso actual de RAM y Swap
+    read -r ram_usage swap_usage <<< "$(get_usage)"
+    
+    echo "Uso de RAM: $ram_usage%"
+    echo "Uso de Swap: $swap_usage%"
+
+    # Si la RAM supera el umbral
+    if (( ram_usage > RAM_THRESHOLD )); then
+        echo "⚠️  Uso de RAM alto: $ram_usage% (Umbral: $RAM_THRESHOLD%)"
+    fi
+
+    # Si la Swap supera el umbral
+    if (( swap_usage > SWAP_THRESHOLD )); then
+        echo "⚠️  Uso de Swap alto: $swap_usage% (Umbral: $SWAP_THRESHOLD%)"
+        reset_swap
+    else
+        echo "Uso de Swap por debajo del umbral, no se requiere acción."
+    fi
+
+    echo "✅ Verificación completa."
+}
+
+main
+

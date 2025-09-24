@@ -1,100 +1,116 @@
 #!/bin/bash
 
-# ---------------------------------------------------------
-# Script de verificación de uso de memoria y swap
-# Autor: Ricardo Rosero
-# Email: rrosero2000@gmail.com
-# Github: https://github.com/rr-n4p5t3r
-# ---------------------------------------------------------
-# Este script verifica el uso de la memoria RAM y swap.
-# Si el uso de la RAM supera el 80% o el uso de la swap
-# supera el 40%, libera memoria RAM, reinicia la swap,
-# y termina procesos de alto consumo de memoria si es necesario.
-# ---------------------------------------------------------
+# ==================================================
+# Script de monitoreo y optimización de memoria y swap
+# Desarrollado por Ricardo Rosero
+# ==================================================
 
-# Umbrales
-RAM_THRESHOLD=80
-SWAP_THRESHOLD=40
-PROCESS_MEMORY_LIMIT=10  # Porcentaje de RAM que un proceso puede usar antes de ser considerado para terminación
+# Habilitar el modo de depuración y salir si un comando falla
+set -e
+trap 'echo "🚫 Error: El script ha fallado en la línea $LINENO." >&2; exit 1' ERR
 
-# Función para obtener el porcentaje de uso de memoria
-get_memory_usage() {
-    local usage=$(free | awk '/^Mem/ {printf("%.0f", $3/$2 * 100.0)}')
-    echo "$usage"
+# --- Umbrales y configuración ---
+readonly RAM_THRESHOLD=85   # Aumentado para evitar falsos positivos
+readonly SWAP_THRESHOLD=60  # Aumentado para evitar falsos positivos
+readonly PROCESS_MEMORY_LIMIT=15 # Porcentaje de RAM que un proceso puede usar
+readonly LOG_FILE="/var/log/memory_monitor.log"
+readonly EXCLUDE_PROCESSES=("gnome-shell" "kdeinit5" "systemd" "firefox" "chrome") # Procesos a excluir de la terminación
+
+# --- Funciones de utilidad ---
+
+# Función de registro de eventos
+log_event() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a "$LOG_FILE" > /dev/null
 }
 
-# Función para obtener el porcentaje de uso de la swap
-get_swap_usage() {
-    local swap_total=$(free | awk '/^Swap/ {print $2}')
-    if [ -z "$swap_total" ] || [ "$swap_total" -eq 0 ]; then
-        echo "0"  # Si no hay swap configurado, devolvemos 0
-    else
-        local usage=$(free | awk '/^Swap/ {printf("%.0f", $3/$2 * 100.0)}')
-        echo "$usage"
-    fi
+# Obtener el uso de memoria en un solo comando
+get_usage() {
+    local mem_usage=$(free | awk '/^Mem/ {printf("%.0f", $3/$2 * 100.0)}')
+    local swap_usage=$(free | awk '/^Swap/ {if ($2>0) printf("%.0f", $3/$2 * 100.0); else print 0}')
+    echo "$mem_usage $swap_usage"
 }
 
-# Función para realizar el swapoff y swapon
-reset_swap() {
-    echo "Reseteando swap..."
-    if sudo swapoff -a && sudo swapon -a; then
-        echo "$(date): Swap reseteado con éxito" >> /var/log/swap_reset.log
-    else
-        echo "$(date): Error al resetear swap" >> /var/log/swap_reset.log
-    fi
-}
-
-# Función para liberar RAM
+# Liberar la caché de RAM de forma segura
 free_ram() {
-    echo "Liberando RAM..."
+    echo "✅ Liberando RAM..."
     sync
-    echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-    echo "$(date): Memoria RAM liberada" >> /var/log/ram_free.log
+    sudo sh -c "echo 3 > /proc/sys/vm/drop_caches"
+    log_event "Memoria RAM liberada."
 }
 
-# Función para matar procesos que usan mucha RAM
+# Resetear la swap
+reset_swap() {
+    echo "✅ Reseteando swap..."
+    if sudo swapoff -a && sudo swapon -a; then
+        log_event "Swap reseteada con éxito."
+    else
+        log_event "Error al resetear swap."
+    fi
+}
+
+# Terminar procesos de forma segura
 kill_heavy_processes() {
-    echo "Identificando procesos que consumen más del $PROCESS_MEMORY_LIMIT% de la RAM..."
-    
-    # Encuentra los procesos que están usando más del 10% de RAM
-    ps aux --sort=-%mem | awk -v limit=$PROCESS_MEMORY_LIMIT '$4 > limit {print $2, $4, $11}' | while read pid mem_usage process_name; do
-        echo "El proceso $process_name con PID $pid está usando $mem_usage% de la RAM."
-        
-        # Si decides matar el proceso, descomenta la siguiente línea
-        sudo kill -9 $pid
-        echo "$(date): Proceso $process_name (PID $pid) que usaba $mem_usage% de la RAM ha sido terminado." >> /var/log/memory_process_kill.log
+    echo "✅ Identificando procesos que consumen más del $PROCESS_MEMORY_LIMIT% de la RAM..."
+    local pids_to_kill=$(ps aux --sort=-%mem | awk -v limit="$PROCESS_MEMORY_LIMIT" '$4 > limit {print $2}')
+    local processes_terminated=0
+
+    for pid in $pids_to_kill; do
+        local process_name=$(ps -p "$pid" -o comm=)
+        local is_excluded=false
+        for excluded in "${EXCLUDE_PROCESSES[@]}"; do
+            if [[ "$process_name" == "$excluded" ]]; then
+                is_excluded=true
+                break
+            fi
+        done
+
+        if [[ "$is_excluded" == "false" ]]; then
+            echo "   Terminando proceso: $process_name (PID: $pid)"
+            if sudo kill -9 "$pid" &>/dev/null; then
+                log_event "Proceso $process_name (PID: $pid) terminado."
+                processes_terminated=$((processes_terminated+1))
+            fi
+        fi
     done
+
+    if [[ "$processes_terminated" -gt 0 ]]; then
+        echo "   Se han terminado $processes_terminated procesos de alto consumo."
+    else
+        echo "   No se encontraron procesos para terminar."
+    fi
 }
 
-# Obtener el porcentaje de uso de RAM y swap
-ram_usage=$(get_memory_usage)
-swap_usage=$(get_swap_usage)
+# --- Lógica principal del script ---
 
-# Depuración: Mostrar valores de RAM y Swap obtenidos
-echo "Uso de RAM: $ram_usage%"
-echo "Uso de Swap: ${swap_usage}%"
+main() {
+    # Verificar si el script se está ejecutando como root
+    if [[ $EUID -ne 0 ]]; then
+        echo "🚫 Este script debe ejecutarse con privilegios de root (sudo) para funcionar correctamente."
+        exit 1
+    fi
 
-# Validar que los valores de RAM no estén vacíos y sean numéricos
-if [ -z "$ram_usage" ] || ! [[ "$ram_usage" =~ ^[0-9]+$ ]]; then
-    echo "Error: No se pudo obtener el uso de la RAM o el valor no es válido."
-    exit 1
-fi
+    # Obtener el uso actual de RAM y Swap
+    read -r ram_usage swap_usage <<< "$(get_usage)"
+    
+    echo "Uso de RAM: $ram_usage%"
+    echo "Uso de Swap: $swap_usage%"
 
-# Validar que los valores de Swap no estén vacíos y sean numéricos
-if [ -z "$swap_usage" ] || ! [[ "$swap_usage" =~ ^[0-9]+$ ]]; then
-    echo "Error: No se pudo obtener el uso de la Swap o el valor no es válido."
-    exit 1
-fi
+    # Si la RAM supera el umbral, liberamos caché y terminamos procesos
+    if (( ram_usage > RAM_THRESHOLD )); then
+        echo "⚠️  Uso de RAM alto: $ram_usage% (Umbral: $RAM_THRESHOLD%)"
+        free_ram
+        kill_heavy_processes
+    fi
 
-# Verificar si se supera el umbral de RAM
-if [ "$ram_usage" -gt "$RAM_THRESHOLD" ]; then
-    echo "Uso de RAM alto: $ram_usage% (Umbral: $RAM_THRESHOLD%)"
-    free_ram  # Liberar RAM si se supera el umbral
-    kill_heavy_processes  # Identificar y matar procesos que consumen demasiada memoria
-fi
+    # Si la Swap supera el umbral, la reseteamos
+    if (( swap_usage > SWAP_THRESHOLD )); then
+        echo "⚠️  Uso de Swap alto: $swap_usage% (Umbral: $SWAP_THRESHOLD%)"
+        reset_swap
+    fi
 
-# Verificar si se supera el umbral de Swap
-if [ "$swap_usage" -gt "$SWAP_THRESHOLD" ]; then
-    echo "Uso de Swap alto: $swap_usage% (Umbral: $SWAP_THRESHOLD%)"
-    reset_swap  # Resetear swap si se supera el umbral
-fi
+    echo "✅ Verificación completa."
+}
+
+# Ejecutar la función principal
+main
+
