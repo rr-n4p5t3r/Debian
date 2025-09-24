@@ -1,93 +1,106 @@
 #!/bin/bash
 
-# ---------------------------------------------------------
-# Script de configuracion automatica de la hora y zona horaria
-# Autor: Ricardo Rosero
-# Email: rrosero2000@gmail.com
-# Github: https://github.com/rr-n4p5t3r
-# ---------------------------------------------------------
+# =======================================================================
+# Script de configuración de hora y zona horaria
+# Desarrollado por Ricardo Rosero
+# =======================================================================
 
-# Función para verificar e instalar paquetes
-verificar_instalar_paquete() {
-    paquete=$1
-    if ! dpkg -l | grep -q "^ii  $paquete "; then
-        echo "El paquete $paquete no está instalado. Instalando..."
-        apt-get update
-        apt-get install -y $paquete
-    else
-        echo "El paquete $paquete ya está instalado."
+# Habilitar el modo de depuración y salir si un comando falla
+set -e
+trap 'echo "🚫 Error: El script ha fallado en la línea $LINENO." >&2; exit 1' ERR
+
+# --- Funciones de utilidad ---
+
+function print_header() {
+    clear
+    echo "======================================================================="
+    echo "       Configuración de Hora y Zona Horaria"
+    echo "======================================================================="
+}
+
+function check_root() {
+    if [[ "$EUID" -ne 0 ]]; then
+        echo "🚫 Este script debe ejecutarse con privilegios de root (sudo) para funcionar correctamente."
+        exit 1
     fi
 }
 
-# Verificar e instalar paquetes necesarios
-verificar_instalar_paquete ntp
-verificar_instalar_paquete ntpdate
-verificar_instalar_paquete systemd-timesyncd
-verificar_instalar_paquete util-linux
+function install_packages() {
+    echo "Verificando e instalando paquetes necesarios..."
+    sudo apt update
+    sudo apt install -y systemd-timesyncd util-linux
+    echo "✅ Paquetes instalados o ya existentes."
+}
 
-# Solicitar la zona horaria al usuario
-read -p "Introduce la zona horaria (por ejemplo, America/Bogota): " zona_horaria
+function show_status() {
+    print_header
+    echo "Estado actual del sistema:"
+    echo "-----------------------------------------------------------------------"
+    timedatectl status
+    echo "-----------------------------------------------------------------------"
+    read -rp "Presione Enter para continuar..." pause
+}
 
-# Validar la zona horaria
-if ! timedatectl list-timezones | grep -q "^$zona_horaria$"; then
-    echo "Zona horaria inválida. Verifica la zona horaria ingresada."
-    exit 1
-fi
+function set_timezone() {
+    read -rp "Introduce la zona horaria (ej. America/Bogota): " zona_horaria
+    
+    if ! timedatectl list-timezones | grep -q "^$zona_horaria$"; then
+        echo "🚫 Zona horaria inválida. Verifique la zona horaria ingresada."
+        read -rp "Presione Enter para continuar..." pause
+        return 1
+    fi
 
-# Solicitar la hora al usuario
-read -p "Introduce la hora en formato HH:MM (por ejemplo, 17:35): " hora_usuario
+    echo "Configurando la zona horaria a $zona_horaria..."
+    timedatectl set-timezone "$zona_horaria"
+    echo "✅ Zona horaria configurada con éxito."
+    read -rp "Presione Enter para continuar..." pause
+}
 
-# Validar el formato de la hora
-if [[ ! $hora_usuario =~ ^[0-9]{2}:[0-9]{2}$ ]]; then
-    echo "Formato de hora inválido. Asegúrate de usar HH:MM."
-    exit 1
-fi
+function sync_rtc() {
+    if command -v hwclock &> /dev/null; then
+        echo "Sincronizando el reloj de hardware (RTC) con la hora del sistema..."
+        sudo hwclock --systohc
+        echo "✅ Reloj de hardware sincronizado con éxito."
+    else
+        echo "🚫 hwclock no está disponible. Verifique la instalación de 'util-linux'."
+    fi
+    read -rp "Presione Enter para continuar..." pause
+}
 
-# Configurar la zona horaria
-echo "Configurando la zona horaria a $zona_horaria..."
-timedatectl set-timezone "$zona_horaria"
-
-# Ajustar la hora manualmente
-echo "Ajustando la hora manualmente a $hora_usuario..."
-date -s "$hora_usuario"
-
-# Verificar la hora actual
-echo "Hora actual del sistema:"
-date
-
-# Deshabilitar NTP si está habilitado
-echo "Deshabilitando NTP temporalmente..."
-timedatectl set-ntp false
-
-# Sincronizar hora con servidores NTP
-if command -v ntpdate > /dev/null; then
-    echo "Sincronizando la hora con ntpdate..."
-    /usr/sbin/ntpdate pool.ntp.org
-elif systemctl is-active --quiet systemd-timesyncd; then
-    echo "Sincronizando la hora con systemd-timesyncd..."
+function enable_ntp() {
+    echo "Habilitando la sincronización automática de hora (NTP)..."
     timedatectl set-ntp true
-else
-    echo "Ningún servicio NTP disponible. Sincronización manualmente desactivada."
-fi
+    echo "✅ Sincronización NTP habilitada. El sistema mantendrá la hora actualizada automáticamente."
+    read -rp "Presione Enter para continuar..." pause
+}
 
-# Habilitar NTP nuevamente si es necesario
-if systemctl is-active --quiet systemd-timesyncd; then
-    echo "Habilitando NTP nuevamente..."
-    timedatectl set-ntp true
-fi
+# --- Lógica principal ---
 
-# Verificar el estado de NTP
-echo "Verificando el estado de NTP..."
-timedatectl status
+main() {
+    check_root
+    install_packages
 
-# Verificar si hwclock está disponible y sincronizar RTC
-if command -v hwclock > /dev/null; then
-    echo "Sincronizando el reloj RTC con la hora del sistema..."
-    /sbin/hwclock --systohc
-else
-    echo "hwclock no está disponible. Verifique la instalación de util-linux."
-fi
+    while true; do
+        print_header
+        echo "1) Ver estado actual de la hora y zona horaria"
+        echo "2) Ajustar zona horaria"
+        echo "3) Sincronizar la hora del sistema con el reloj de hardware (RTC)"
+        echo "4) Habilitar la sincronización automática de hora (NTP)"
+        echo "0) Salir"
+        echo "-----------------------------------------------------------------------"
+        read -rp "Seleccione una opción: " opcion
 
-# Verificar la hora del sistema después de los cambios
-echo "Hora actual del sistema después de los ajustes:"
-date
+        case $opcion in
+            1) show_status ;;
+            2) set_timezone ;;
+            3) sync_rtc ;;
+            4) enable_ntp ;;
+            0) echo "Saliendo..."; exit 0 ;;
+            *) echo "Opción inválida. Intente de nuevo."; read -rp "Presione Enter para continuar..." pause ;;
+        esac
+    done
+}
+
+# Ejecutar la función principal
+main
+
