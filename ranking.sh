@@ -2,7 +2,8 @@
 
 # ==================================================
 # Ranking de comandos más utilizados
-# Desarrollado por Ricardo Rosero
+# Desarrollado por Lexi (lachicadesistemas).
+# Mejorado y optimizado por Ricardo Rosero
 # ==================================================
 
 # Habilitar el modo de depuración y salir si un comando falla
