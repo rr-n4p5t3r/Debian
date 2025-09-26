@@ -2,7 +2,7 @@
 
 # =======================================================================
 # Monitor de Sistema en Tiempo Real
-# Desarrollado por CodeGuardian
+# Desarrollado por Ricardo Rosero
 # =======================================================================
 
 # Habilitar el modo de depuración y salir si un comando falla
