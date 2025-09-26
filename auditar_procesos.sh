@@ -2,7 +2,7 @@
 
 # ==================================================
 # Auditor de Procesos del Sistema
-# Desarrollado por CodeGuardian
+# Desarrollado por Ricardo Rosero
 # ==================================================
 
 # Habilitar el modo de depuración y salir si un comando falla
